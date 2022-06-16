@@ -1,0 +1,499 @@
+#!/bin/ksh
+#
+# Hex editor, in ksh for fun
+# Paul Lampert
+#
+set -u #unset variables are errors
+
+# Globals
+typeset -A changes           # pending writes to file.  changes[offset]=ascii-value
+typeset -a asc_to_print      # printable character translation. asc_to_print[ascii_value]=character
+typeset -A -i ch_to_ascval   # byte to ascii value. ch_to_ascval[byte]=ascii-value, byte is typeset -b (base64), from read -r -N1
+typeset lrl                  # logical record length
+
+# terminal codes
+typeset smso="$(tput smso)"  # set standout mode
+typeset rmso="$(tput rmso)"  # rm standout mode
+typeset smul="$(tput smul)"  # set underline
+typeset rmul="$(tput rmul)"  # rm underline
+
+usage()
+{
+    echo >&2 "Hex editor"
+    echo >&2 "usage: hed <file> [record length, default 256]"
+    exit 1
+}
+
+function display_status_line
+{
+    # display status line
+    typeset eof=$(3<#((EOF)))
+    typeset maxrec=$((int(eof/lrl)))
+    printf "$FILE  eof %d (%#x)  lrl $lrl  max rec $maxrec [h for help]\n" $eof $eof
+    typeset i
+    for i in ${!changes[*]};do
+        typeset -i16 ascval=${changes[$i]}
+        printf "pending write offset %#x value %#02x (%c)\n" $i $((ascval)) "${asc_to_print[$((ascval))]}"
+    done
+}
+
+function update_position
+{
+    # input: input position variable name to adjust, output eof variable name
+    # clamps position to be within 0<=x<=eof, and outputs new eof
+    #
+    nameref io_pos=$1        # input & output
+    nameref out_eof=$2       # output eof
+    out_eof=$(3<#((EOF))) # latch file eof
+    if (( io_pos<0 )); then
+        (( io_pos=0 ))
+    elif (( io_pos>out_eof )); then
+        (( io_pos=out_eof ))
+    fi
+}
+
+function readnum
+{
+    # utility to read a number in base 10 or 16 (0x###), output value in to $output.
+    # if unparseable, then leave it alone.
+    # assumed to be set to default value
+    nameref output=$1
+    typeset number=$2
+    if [[ $number = *( )+([0-9]) ]]; then
+        # decimal
+        output=${number}
+    elif [[ $number = *( )0x+([[:xdigit:]]) ]]; then
+        # hexadecimal
+        output=$((16#${number##0x}))
+    fi
+}
+
+function dump
+{
+    # utility to dump the file, with changes, starting at offset, for nrecs
+    typeset offset=$1
+    typeset nrecs=$2
+
+    update_position offset eof           # check offset in range, and get eof
+
+    typeset low=$((offset - offset%16))  #can fit 16 bytes per row.
+    typeset dumphigh=$((offset+nrecs*lrl))
+    if ((dumphigh>eof));then
+        dumphigh=$eof
+    fi
+    typeset high=$((ceil(1.0*dumphigh/16)*16))
+    # starts at increments of 16 low and high
+    # bytes inside requested offset are shown
+    # bytes outside range are replaced with .. or " "
+
+    printf "rec %d  pos %d (%#x)\n" $((offset/lrl)) $offset $offset
+
+    3<#((offset))               # set read pos of file
+
+    printf "$smul %10s   0 1  2 3  4 5  6 7   8 9  a b  c d  e f$rmul\n" ' '
+    # dump each line
+    for (( i=low; i<high; i+=16 ));do
+
+        printf " %#10x: " $i 
+        typeset line=""
+        for (( j=i; j<i+16; j++ ));do
+            if (( j==i+8 )); then
+                printf " " # extra space in hex dump to separate 8 byte segments
+            fi
+            if (( j>=eof )); then
+                printf "  "
+                line+=" "
+            elif (( j>=dumphigh )); then
+                printf ".."
+                line+=" "
+            elif (( j<offset )); then
+                printf ".."
+                line+=" "
+            else
+                # read byte or display changes
+                typeset -b ch
+                read -r -u 3 -N1 ch                  # read byte from file
+                typeset -i asc=${ch_to_ascval[$ch]}  # convert to 0-255
+                # highlight pending changes
+                if [[ $asc != ${changes[$j]:-$asc} ]]; then
+                    # show changes highlighted
+                    asc=${changes[$j]}
+                    typeset b4="$smso"
+                    typeset af="$rmso"
+                else
+                    # don't highlight
+                    typeset b4=""
+                    typeset af=""
+                fi
+                printf "${b4}%02x${af}" $asc            # output hex value, highlighted if nec.
+                line+="${b4}${asc_to_print[$asc]}${af}" # ascii, with controls chars filtered
+            fi
+            if ((j%2)); then
+                printf " " # space in between hex digits
+            fi
+        done
+        print -n " |$line|\n"
+    done
+
+    if (( high>=eof )); then
+        printf "EOF.  len=%d (%#x)\n" $eof $eof
+    fi
+}
+
+function patch_file_at_offset
+{
+    # Add changes in asc array starting at offset to changes variable
+    nameref offset=$1
+    nameref asc=$2      # array of ascii values to poke at offset
+
+    typeset eof=0
+    update_position offset eof
+
+    3<#((offset)) # position file read at offset
+
+    # register patches in changes array
+    typeset i
+    for i in ${asc[*]};do
+        #printf "patch_file_at_offset $offset val $i\n"
+        if (( offset >= eof )); then
+            break # don't go beyond eof
+        fi
+        # read file to compare to edit
+        typeset -b ch
+        read -r -u 3 -N1 ch                  # read byte from file
+        typeset -i asc=${ch_to_ascval[$ch]}  # convert to 0-255
+        if (( asc == i ));then
+            unset changes[$offset]           # clear any changes for matches
+        else
+            changes[$offset]=$i              # register change at offset
+        fi
+        (( offset++ ))
+    done
+}
+
+function parse_patches
+{
+    # This parses the patches after an edit command and outputs a list of ascii values
+    #  accepts "string" or 'string' or hex digits
+    nameref asc=$1         # output asc value array
+    shift
+    typeset -a args=("$@")
+    typeset -a -i asc=() # clear output ascii value array
+
+    for i in "${args[@]}";do
+
+        if [[ $i = \"@(*[^\"])?(\") ||
+              $i = \'@(*[^\'])?(\') ]]; then
+            # Parse string edit
+            # \"            initial quote
+            # @(*[^\"])     \1 everything except quote
+            # ?(\")         \2 optional final quote
+            typeset s=${.sh.match[1]}      # string extracted. "*" "* '*' '*
+            for ((i=0; i<${#s}; i++)); do
+                # walk string and generate array of ascii values
+                asc[${#asc[*]}]=$(printf "%d" "'${s:i:1}") # ' prefix for char gives ascii value for printf %d
+            done
+
+        elif [[ "$i" = *([[:xdigit:]]| ) ]]; then
+            # Parse hex digits
+            typeset hexsegs=($i)    # break apart in to an array
+            for seg in ${hexsegs[*]};do
+                if (( ${#seg}%2==1 ));then
+                    seg="0$seg" # odd length, so prepend 0.  123 would be the same as 0123
+                fi
+                # Break each segment in to 2 digit hex bytes
+                while [[ -n $seg ]]; do
+                    typeset byte="${seg:0:2}"      # first 2 bytes
+                    seg=${seg:2}                   # rest of string
+                    asc[${#asc[*]}]=$(printf "%d" 0x$byte)
+                done
+            done
+
+        else
+
+            echo "parse_patches: error, cannot parse: $i"
+        fi
+        shift
+    done
+}
+
+function interactive_edit_mode
+{
+    # enter interactive edit mode
+    nameref editpos=$1
+    echo "^d when done editing; enter for next; - for prev; patch with quoted string or hex values"
+    typeset eof=$(3<#((EOF)))
+    while (( editpos < eof ));do
+        3<#((editpos))
+        typeset -b ch
+        read -r -u 3 -N1 ch                  # read byte from file
+        typeset -i ascorig=${ch_to_ascval[$ch]}  # convert to 0-255
+        typeset -i ascchg=${changes[$editpos]:-$ascorig}
+        printf "offset %#x: " $editpos
+        if (( $ascorig == $ascchg )); then
+            # no pending edits
+            printf "%02x|${asc_to_print[$ascchg]}|" $ascchg
+            unset changes[$editpos]
+        else
+            # show original and highlight pending edit
+            printf "$smso%02x$rmso|$smso${asc_to_print[$ascchg]}$rmso| (orig %02x|${asc_to_print[$ascorig]}|) " $ascchg $ascorig
+        fi
+        printf "? "
+        if ! read patches; then
+            # break out of interactive loop with ^d
+            printf "\ndone edit\n"
+            break
+        fi
+        if [[ -z $patches ]]; then
+            (( editpos++ ))
+        elif [[ $patches = - ]]; then
+            (( editpos-- ))
+        else
+            unset asc
+            typeset -a asc
+            parse_patches asc "$patches"   # pass patches as arguments
+            patch_file_at_offset editpos asc
+        fi
+        update_position editpos eof
+    done
+}
+
+function help
+{
+        cat <<EOF
+HED hex editor help
+p#       Set byte position (0x for hex)
+r#       Position to record number. If # is blank, align on current rec
+$        Set position to last record
+.        Show current record
+#        Forward # records
+<enter>  Forward 1 record
+-#       Backward # records
+l#       Set logical record length (default 256)
+editing
+    e OFFSET       interactive edit mode, byte by byte. ^d to stop
+    e OFFSET HEX   at OFFSET, set HEX bytes;    e 0x1234 FF EE
+    e OFFSET "string"  at OFFSET, set string;   e 1000 "Hello"
+    OFFSET: ...    : indicates edit at offset;  0x999: "Hello" 00
+w        Write changes
+?        Status, shoow pending edits
+q or x   Exit
+EOF
+}
+
+function main
+{
+    # set up byte to display translation array.
+    typeset -i16 hexint          # hex integer, outputs 16#xx
+    for hexint in {0..255};do
+        typeset -b c
+        printf "\x${hexint#16#}" | read -r -N1 c # generate byte
+        ch_to_ascval["$c"]=$((hexint))           # character to ascii integer value
+        if (( hexint>=32 && hexint<=126 )); then
+            asc_to_print[$((hexint))]="$(printf "%B" c)"   # printable character to character
+        else
+            asc_to_print[$((hexint))]="."                   # unprintable character to '.'
+        fi
+        #printf "asc_to_print %#02x %d=(%c)\n" $((hexint)) $((hexint)) "${asc_to_print[$((hexint))]}"
+    done
+
+    # Find file to open
+
+    if [[ -z ${1:-} ]]; then
+        usage
+        exit 1
+    fi
+    FILE="$1"
+    if [[ ! -f $FILE ]]; then
+        echo >&2 "file not found $FILE"
+        exit 1
+    fi
+
+    # logical record length, default to 256
+
+    lrl=${2:-256}
+    if (( lrl>32768 || lrl<1 )); then
+        lrl=256
+    fi
+
+# work on temp file for now.
+
+    cp "$FILE" "$FILE.tmp.$$"
+    if [[ $? -ne 0 ]]; then
+        echo >&2 "error creating tmp file $FILE.tmp.$$"
+        exit 1
+    fi
+    trap "rm $FILE.tmp.$$" 0
+    exec 3<>$FILE.tmp.$$
+
+
+    # Start of main loop.
+    typeset pos=0     #initial position
+    typeset eof=0
+    typeset n         #temp variable
+
+    display_status_line
+    dump 0 1  #inital dump
+
+    typeset quit_twice=0 #special state, two exits to force quit
+
+    while true;do
+
+        # read next command
+
+        print -n "-"
+        read cmd
+        rc=$?
+        if [[ $rc -eq 1 || "$cmd" = [xq]* ]]; then
+            # ^d exits. but check if unsaved changes
+            if (( ${#changes[*]}!=0 )); then
+                if (( quit_twice==0 )); then
+                    echo "unsaved changes, w to write, or exit again to discard changes"
+                    quit_twice=1
+                    continue
+                else
+                    echo "discarding unsaved changes"
+                fi
+            fi
+            exit 0
+        fi
+        quit_twice=0
+
+        if [[ "$cmd" = h* ]]; then
+
+            help
+
+        elif [[ "$cmd" = [?]* ]]; then
+
+            display_status_line
+
+        elif [[ "$cmd" = *([0-9]) || "$cmd" = "." ]]; then
+
+            if [[ "$cmd" = "." ]] ;then
+                cmd="0" # . shows current rec
+            fi
+            n=1 # default
+            readnum n "$cmd"
+            if ((n<1)); then
+                # 0 preserves current position, and dumps rec
+                dump $pos 1
+            else
+                # >0 and dumps n recs, and positions to last record in dump
+                (( pos+=lrl ))
+                update_position pos eof
+                dump $pos $n
+                (( pos+=(n-1)*lrl ))
+                update_position pos eof
+            fi
+
+        elif [[ "$cmd" = [-=+]* ]]; then
+
+            n=1 #default
+            readnum n "${cmd##?}"
+            if [[ "$cmd" = -* ]]; then
+                #echo "backwards $n recs"
+                ((pos-=n*lrl))
+            else
+                #echo "forwards $n recs"
+                ((pos+=n*lrl))
+            fi
+            update_position pos eof
+            dump $pos 1
+
+        elif [[ "$cmd" = r* ]]; then
+
+            (( n=int(pos/lrl) )) #default, just align on current rec
+            readnum n "${cmd##?}"
+    #       echo "jump to record $n"
+            ((pos=n*lrl))
+            update_position pos eof
+            dump $pos 1
+
+        elif [[ "$cmd" = \$ ]]; then
+
+            #special case for position command: set to eof with "eof" or $
+            eof=$(3<#((EOF)))
+            ((pos=int(eof/lrl)*lrl))
+            if ((pos>lrl && eof==pos)); then
+                ((pos-=lrl)) # for eof on rec boundary, choose earlier rec.
+            fi
+            update_position pos eof
+            dump $pos 1
+
+        elif [[ "$cmd" = p* ]]; then
+
+            ((n=pos)) # default to current position
+            readnum n "${cmd##?}"
+    #       echo "jump to position $n"
+            ((pos=n)) 
+            update_position pos eof
+            dump $pos 1
+
+        elif [[ "$cmd" = l* ]]; then
+
+            n=256
+            readnum n "${cmd##?}"
+            if ((n<1)); then
+                n=256
+            fi
+            echo "set lrl to $n"
+            (( lrl=n ))
+            dump $pos 1
+
+        elif [[ "$cmd" = *(e|\s)+([0-9a-fA-Fx])*(\s|:)@(*) ]]; then
+            # Edit
+            #    *(e|\s)       \1 optional edit command
+            #    +([^:])       \2 position
+            #    *(:|\s)       \3 optional colon
+            #    @(*)          \4 rest of line
+            typeset editpos="${.sh.match[2]}"
+            typeset patches="${.sh.match[4]}"
+            typeset offset=-1
+            readnum offset $editpos
+            if ((offset==-1)); then
+                echo "parse_edit_command:error parsing edit position $editpos"
+                continue
+            fi
+            (( pos=offset ))
+            update_position pos eof
+            if (( pos != offset ));then
+                echo "parse_edit_command:edit position out of range 0-$((eof))"
+                continue
+            fi
+
+            if [[ -z "$patches" ]]; then
+                interactive_edit_mode pos
+            else
+                unset asc
+                typeset -a asc
+                parse_patches asc "$patches"   # pass patches as arguments
+                patch_file_at_offset pos asc
+            fi
+            (( pos=int(pos/lrl)*lrl )) # align on record
+            update_position pos eof
+            dump $pos 1
+
+        elif [[ $cmd = w ]]; then
+
+            if (( ${#changes[*]}==0 )); then
+                echo "no changes pending."
+                continue
+            fi
+            echo "writing ${#changes[*]} changes"
+            for i in ${!changes[*]};do
+                typeset -i16 ascval=${changes[$i]}
+                printf "offset %#x value %#02x (%c)\n" $i $((ascval)) "${asc_to_print[$((ascval))]}"
+                # position write 
+                3<#((i)) # position write at this offset
+                print -u 3 -f "\\x${ascval#16#}" #write the hex value
+                unset changes[$i]
+            done
+
+        else
+            echo "unknown command $cmd"
+        fi
+
+    done
+}
+
+main "$@" # run main function
