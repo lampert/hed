@@ -316,16 +316,7 @@ function main
         lrl=256
     fi
 
-# work on temp file for now.
-
-    cp "$FILE" "$FILE.tmp.$$"
-    if [[ $? -ne 0 ]]; then
-        echo >&2 "error creating tmp file $FILE.tmp.$$"
-        exit 1
-    fi
-    trap "rm $FILE.tmp.$$" 0
-    exec 3<>$FILE.tmp.$$
-
+    exec 3<>$FILE
 
     # Start of main loop.
     typeset pos=0     #initial position
