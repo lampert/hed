@@ -283,22 +283,7 @@ EOF
 
 function main
 {
-    # set up byte to display translation array.
-    typeset -i16 hexint          # hex integer, outputs 16#xx
-    for hexint in {0..255};do
-        typeset -b c
-        printf "\x${hexint#16#}" | read -r -N1 c # generate byte
-        ch_to_ascval["$c"]=$((hexint))           # character to ascii integer value
-        if (( hexint>=32 && hexint<=126 )); then
-            asc_to_print[$((hexint))]="$(printf "%B" c)"   # printable character to character
-        else
-            asc_to_print[$((hexint))]="."                   # unprintable character to '.'
-        fi
-        #printf "asc_to_print %#02x %d=(%c)\n" $((hexint)) $((hexint)) "${asc_to_print[$((hexint))]}"
-    done
-
     # Find file to open
-
     if [[ -z ${1:-} ]]; then
         usage
         exit 1
@@ -317,6 +302,20 @@ function main
     fi
 
     exec 3<>$FILE
+
+    # set up byte to display translation array.
+
+    typeset -i16 hexint          # hex integer, outputs 16#xx
+    for hexint in {0..255};do
+        typeset -b c
+        printf "\x${hexint#16#}" | read -r -N1 c # generate byte
+        ch_to_ascval["$c"]=$((hexint))           # character to ascii integer value
+        if (( hexint>=32 && hexint<=126 )); then
+            asc_to_print[$((hexint))]="$(printf "%B" c)"   # printable character to character
+        else
+            asc_to_print[$((hexint))]="."                   # unprintable character to '.'
+        fi
+    done
 
     # Start of main loop.
     typeset pos=0     #initial position
