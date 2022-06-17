@@ -303,17 +303,21 @@ function main
 
     exec 3<>$FILE
 
-    # set up byte to display translation array.
+    # set up byte-to-ascii and ascii-to-printable arrays
+    # byte is base 64 from 'read -r' to a binary typeset var
 
     typeset -i16 hexint          # hex integer, outputs 16#xx
+    typeset -b ch
     for hexint in {0..255};do
-        typeset -b c
-        printf "\x${hexint#16#}" | read -r -N1 c # generate byte
-        ch_to_ascval["$c"]=$((hexint))           # character to ascii integer value
-        if (( hexint>=32 && hexint<=126 )); then
-            asc_to_print[$((hexint))]="$(printf "%B" c)"   # printable character to character
+        printf "\x${hexint#16#}"
+    done | while read -r -N1 ch # generate byte
+    do
+        typeset -i ascval=${#ch_to_ascval[*]}
+        ch_to_ascval["$ch"]=$ascval
+        if (( ascval>=32 && ascval<=126 )); then
+            asc_to_print[$ascval]="$(printf "%B" ch)"   # printable character to character
         else
-            asc_to_print[$((hexint))]="."                   # unprintable character to '.'
+            asc_to_print[$ascval]="."                   # unprintable character to '.'
         fi
     done
 
