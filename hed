@@ -93,13 +93,17 @@ function dump
 
     3<#((offset))               # set read pos of file
 
+    # draw ruler
     printf "$smul              "
     for (( i=0; i<dump_per_line; i++ ));do
-        printf "%2x" $i
         (( (i%8)==7 )) && printf " "
-        (( (i%2)==1 )) && printf " "
+        (( (i%2)==0 )) && printf "%02x   " $i
     done
-#    printf "$smul               0 1  2 3  4 5  6 7   8 9  a b  c d  e f$rmul\n"
+    printf "|"
+    for (( i=0; i<dump_per_line; i++ ));do
+        (( (i%4)==0 )) && printf "%02x  " $i
+    done
+    printf "|"
     printf "$rmul\n"
     # dump each line
     for (( i=low; i<high; i+=dump_per_line ));do
