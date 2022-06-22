@@ -9,9 +9,17 @@ set -u #unset variables are errors
 typeset -A changes           # pending writes to file.  changes[offset]=ascii-value
 typeset -a asc_to_print      # printable character translation. asc_to_print[ascii_value]=character
 typeset -A -i ch_to_ascval   # byte to ascii value. ch_to_ascval[byte]=ascii-value, byte is typeset -b (base64), from read -r -N1
+<<<<<<< HEAD
 typeset lrl                  # logical record length
 typeset dump_per_line        # how many bytes to show per line in hex dump
 typeset readonly=""          # if set, then read only mode enabled
+||||||| bcc7cdc
+typeset lrl                  # logical record length
+=======
+typeset lrl=256              # logical record length, default
+typeset dump_per_line=16     # default is 16 bytes per line on dump
+typeset readonly=""          # if set, then read only mode enabled
+>>>>>>> b43d18a9ab4d5b6f9458ebf1a8f94839113641d4
 
 # terminal codes
 typeset smso="$(tput smso)"  # set standout mode
@@ -293,6 +301,7 @@ EOF
 
 function main
 {
+<<<<<<< HEAD
     # adjust output for larger terminal.
     if (( cols >= 132 )); then
         # larger terminal, show more.
@@ -308,6 +317,15 @@ function main
         shift
         readonly="read-only"
     fi
+||||||| bcc7cdc
+    # Find file to open
+=======
+    if [[ $1 = -r ]];then
+        shift
+        readonly="read-only"
+    fi
+    # Find file to open
+>>>>>>> b43d18a9ab4d5b6f9458ebf1a8f94839113641d4
     if [[ -z ${1:-} ]]; then
         usage
         exit 1
@@ -317,7 +335,12 @@ function main
         echo >&2 "cannot open '$FILE'"
         exit 1
     fi
+<<<<<<< HEAD
     lrl=${2:-$lrl}
+||||||| bcc7cdc
+=======
+    lrl=${2:-$lrl} # lrl is set to default based on terminal size. override if requested
+>>>>>>> b43d18a9ab4d5b6f9458ebf1a8f94839113641d4
 
     if [[ -z $readonly ]]; then
         exec 3<>$FILE  # open for read-write
@@ -325,6 +348,19 @@ function main
         exec 3<$FILE   # open for reads only
     fi
 
+<<<<<<< HEAD
+||||||| bcc7cdc
+    exec 3<>$FILE
+
+=======
+    # adjust output for larger terminal.
+    if (( cols >= 132 )); then
+        # larger terminal, show more.
+        dump_per_line=32
+        lrl=1024
+    fi
+
+>>>>>>> b43d18a9ab4d5b6f9458ebf1a8f94839113641d4
     # set up byte-to-ascii and ascii-to-printable arrays
     # byte is base 64 from 'read -r' to a binary typeset var
 
