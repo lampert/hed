@@ -361,6 +361,7 @@ function main
 
         # read next command
 
+#        printf "rec %d  pos %d (%#x)-" $((pos/lrl)) $pos $pos
         print -n "-"
         read cmd
         rc=$?
@@ -398,13 +399,15 @@ function main
                 # 0 preserves current position, and dumps rec
                 dump $pos 1
             else
-                # >0 and dumps n recs, and positions to last record in dump
-                (( pos+=lrl ))
-                update_position pos eof
                 dump $pos $n
-                (( pos+=(n-1)*lrl ))
-                update_position pos eof
             fi
+            # >0 and dumps n recs, and positions to last record in dump
+            (( pos+=n*lrl ))
+            if (( pos >= eof )); then
+                (( n=int( 1+(pos-eof)/lrl ) )) # back off to before eof
+                (( pos-=n*lrl ))
+            fi
+            update_position pos eof
 
         elif [[ "$cmd" = [-=+]* ]]; then
 
