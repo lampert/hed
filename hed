@@ -146,7 +146,7 @@ function dump
                 printf " " # space in between hex digits
             fi
         done
-        print -n " |$line|\n"
+        print -r " |$line|"
     done
 
     if (( high>=eof )); then
