@@ -43,15 +43,15 @@ function display_status_line
 function update_position
 {
     # input: input position variable name to adjust, output eof variable name
-    # clamps position to be within 0<=x<=eof, and outputs new eof
+    # clamps position to be within 0<=x<=last_record_eof, and outputs new eof
     #
     nameref io_pos=$1        # input & output
     nameref out_eof=$2       # output eof
     out_eof=$(3<#((EOF))) # latch file eof
     if (( io_pos<0 )); then
         (( io_pos=0 ))
-    elif (( io_pos>out_eof )); then
-        (( io_pos=out_eof ))
+    elif (( io_pos>=out_eof )); then
+        (( io_pos=int(out_eof/lrl)*lrl )) # position to last record
     fi
 }
 
@@ -89,7 +89,7 @@ function dump
     # bytes inside requested offset are shown
     # bytes outside range are replaced with .. or " "
 
-    printf "rec %d  pos %d (%#x)\n" $((offset/lrl)) $offset $offset
+    printf "(dump) rec %d  pos %d (%#x)\n" $((offset/lrl)) $offset $offset
 
     3<#((offset))               # set read pos of file
 
@@ -108,7 +108,7 @@ function dump
     # dump each line
     for (( i=low; i<high; i+=dump_per_line ));do
 
-        printf " %#10x: " $i 
+        printf " %#10x: " $i
         typeset line=""
         for (( j=i; j<i+dump_per_line; j++ ));do
             if (( j%8 == 0 )); then
@@ -268,7 +268,6 @@ function interactive_edit_mode
             parse_patches asc "$patches"   # pass patches as arguments
             patch_file_at_offset editpos asc
         fi
-        update_position editpos eof
     done
 }
 
@@ -361,7 +360,7 @@ function main
 
         # read next command
 
-#        printf "rec %d  pos %d (%#x)-" $((pos/lrl)) $pos $pos
+printf "\n\n\n\n\n\n\nrec %d  pos %d (%#x)" $((pos/lrl)) $pos $pos
         print -n "-"
         read cmd
         rc=$?
@@ -388,28 +387,28 @@ function main
 
             display_status_line
 
-        elif [[ "$cmd" = *([0-9]) || "$cmd" = "." ]]; then
+        elif [[ "$cmd" = "." ]]; then
 
-            if [[ "$cmd" = "." ]] ;then
-                cmd="0" # . shows current rec
-            fi
+            # dump current pos
+            dump $pos 1
+
+        elif [[ "$cmd" = *([0-9]) ]]; then
+
+            # dump several records and move cursor
+
             n=1 # default
             readnum n "$cmd"
-            if ((n<1)); then
-                # 0 preserves current position, and dumps rec
-                dump $pos 1
-            else
+            if (( n>0 ));then
+                (( pos+=lrl )) #start at next rec
                 dump $pos $n
-            fi
-            # >0 and dumps n recs, and positions to last record in dump
-            (( pos+=n*lrl ))
-            if (( pos >= eof )); then
-                (( n=int( 1+(pos-eof)/lrl ) )) # back off to before eof
-                (( pos-=n*lrl ))
+                (( pos+=(n-1)*lrl ))
+            else
+                dump $pos 1
             fi
             update_position pos eof
 
         elif [[ "$cmd" = [-=+]* ]]; then
+            # advance cursor, dump resulting record
 
             n=1 #default
             readnum n "${cmd##?}"
