@@ -22,7 +22,7 @@ typeset cols="$(tput cols)"  # number of columns on screen
 
 usage()
 {
-    echo >&2 "Hex editor"
+    echo >&2 "Hex editor 221105"
     echo >&2 "usage: hed [-r (read only)] <file> [record length]"
     exit 1
 }
@@ -89,7 +89,7 @@ function dump
     # bytes inside requested offset are shown
     # bytes outside range are replaced with .. or " "
 
-    printf "(dump) rec %d  pos %d (%#x)\n" $((offset/lrl)) $offset $offset
+    printf "rec %d  pos %d (%#x)\n" $((offset/lrl)) $offset $offset
 
     3<#((offset))               # set read pos of file
 
@@ -360,8 +360,7 @@ function main
 
         # read next command
 
-printf "\n\n\n\n\n\n\nrec %d  pos %d (%#x)" $((pos/lrl)) $pos $pos
-        print -n "-"
+        printf "-"
         read cmd
         rc=$?
         if [[ $rc -eq 1 || "$cmd" = [xq]* ]]; then
